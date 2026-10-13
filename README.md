@@ -111,24 +111,6 @@ docker run --rm --entrypoint bash gpg-cracker -c \
    john --format=gpg --incremental=lower /tmp/hash.txt"
 ```
 
----
-
-## Run locally (without Docker)
-
-```bash
-# Install dependencies
-pip install cryptography
-
-# Run the cracker
-python3 cracker.py                            # defaults (up to 6 chars)
-python3 cracker.py --max-len 4               # faster (smaller space)
-python3 cracker.py --max-len 5 --workers 8  # 8 parallel workers
-python3 cracker.py --subprocess              # use gpg subprocess instead
-
-# Run the benchmark experiment
-python3 benchmark.py
-```
-
 ### All CLI options
 
 ```
