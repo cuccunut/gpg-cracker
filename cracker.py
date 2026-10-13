@@ -315,13 +315,15 @@ def worker_task(args_tuple: tuple) -> Optional[str]:
             candidate = prefix + "".join(suffix)
 
             if _use_quick:
-                found = _quick_check(candidate, _params)
+                # Quick-check has ~1/65536 false-positive rate.
+                # Confirm with gpg before declaring victory and stopping all workers.
+                if _quick_check(candidate, _params) and _gpg_verify(candidate, _gpg_path):
+                    _stop.set()
+                    return candidate
             else:
-                found = _gpg_verify(candidate, _gpg_path)
-
-            if found:
-                _stop.set()
-                return candidate
+                if _gpg_verify(candidate, _gpg_path):
+                    _stop.set()
+                    return candidate
 
     return None
 
@@ -429,15 +431,7 @@ def main() -> None:
 
     print()
     if found:
-        # Quick-check has ~1/65536 false-positive rate; confirm with gpg if possible
-        confirmed = True
-        if use_quick:
-            try:
-                confirmed = _gpg_verify(found, args.file)
-            except FileNotFoundError:
-                pass  # gpg not installed — trust the quick-check
-        status = "CONFIRMED" if confirmed else "CANDIDATE (gpg not available to confirm)"
-        print(f"[+] KEY FOUND ({status}): '{found}'")
+        print(f"[+] KEY FOUND (CONFIRMED): '{found}'")
     else:
         print("[-] Key NOT found in the specified search space.")
 
