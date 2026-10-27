@@ -4,6 +4,8 @@ A multiprocessing Python tool that recovers the symmetric passphrase of a
 GPG-encrypted file when only the character set (lowercase letters `a`–`z`) is
 known.
 
+---
+
 ## How it works
 
 ### Architecture
@@ -47,65 +49,148 @@ hashes ~65 MB of data. With `gpg` subprocess this costs additionally:
 The in-memory path eliminates both overheads and decrypts only 2 cipher blocks
 instead of the full 62 KB archive.
 
-### Experimental results (benchmark.py)
+---
 
-Run `python3 benchmark.py` to reproduce:
+## Experimental results (`benchmark.py`)
+
+All experiments were run inside Docker with limited resources
+(`--cpus 1 --memory 512m`) for reproducibility:
+
+```bash
+docker run --rm --cpus 1 --memory 512m --entrypoint bash gpg-cracker \
+  -c "python3 benchmark.py"
+```
+
+### Experiment 1 — Technology comparison (1 000 passwords)
+
+1 000 randomly generated invalid passwords (fixed seed for reproducibility):
 
 ```
-[1] In-memory quick-check (Python + cryptography library)
-  quick_check                  15 attempts in 8.4s  →  1.8 att/s  (558 ms/att)
+┌─ Experiment 1: Decryption approach (1 000 passwords) ─────────────┐
+  [A] In-memory quick-check    41.08 s  |  24.3 att/s  |  41.1 ms/att
+  [B] Subprocess gpg          130.93 s  |   7.6 att/s  | 130.9 ms/att
 
-[2] Subprocess gpg --decrypt (one process per attempt)
-  subprocess gpg               5 attempts in 12.3s  →  0.4 att/s  (2460 ms/att)
-
-  => In-memory is ~4.4x faster than subprocess gpg
-
-Estimated time to search entire space (8 cores):
-  in-memory  / 8 cores / max-len=4:          475,254 pw  →    33 min  (0.5 h)
-  in-memory  / 8 cores / max-len=5:       12,356,630 pw  →   857 min  (14.3 h)
-  subprocess / 8 cores / max-len=4:          475,254 pw  →   148 min  (2.5 h)
+  => In-memory is 3.2x faster than subprocess gpg
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 > **Note:** the SHA-512 S2K with 65M iterations is the dominant cost.
 > GPU-based tools (hashcat) or a lower S2K count would be significantly faster.
 
+### Experiment 2 — Password generation strategy (1 000 passwords)
+
+Whether it is faster to generate passwords
+**upfront**, **on-demand**, in **batches**, or from a **file**.
+
+```
+┌─ Experiment 2: Password generation strategy (1 000 passwords) ────┐
+  (checking function: in-memory quick-check)
+
+  Upfront list  (pre-allocate all)     40.97 s  |  24.4 att/s  |  41.0 ms/att
+  On-demand     (itertools generator)  41.36 s  |  24.2 att/s  |  41.4 ms/att
+  File-based    (write → read disk)    41.44 s  |  24.1 att/s  |  41.4 ms/att
+  Batched 50    (chunks of 50)         41.54 s  |  24.1 att/s  |  41.5 ms/att
+
+  Conclusion: generation overhead is negligible compared to S2K cost.
+  On-demand (itertools) chosen: O(1) memory, no disk I/O, yields each
+  password only when a worker needs it.
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**Conclusion:** all four strategies perform identically because S2K
+(~41 ms/attempt) completely dominates. The cracker uses on-demand
+`itertools.product` generation: constant O(1) memory, no upfront
+allocation, no disk I/O.
+
 ### Search space
 
-| Max length | Passwords | In-memory / 8 cores |
-|-----------|----------|---------------------|
-| 4 | 475,254 | ~30 min |
-| 5 | 12,356,630 | ~14 h |
-| 6 | 321,272,406 | ~15 days |
+Estimated wall-clock time with in-memory mode (based on 24.3 att/s per core,
+measured on 1 CPU with `--cpus 1 --memory 512m`):
+
+| Max length | Passwords | 1 core | 4 cores | 8 cores |
+|-----------|----------|--------|---------|---------|
+| 4 | 475,254 | ~5.4 h | ~1.4 h | ~41 min |
+| 5 | 12,356,630 | ~141 h | ~35 h | ~18 h |
+| 6 | 321,272,406 | ~3671 h | ~918 h | ~459 h |
 
 ---
 
-## Requirements
+## Quick demo / smoke test
 
-- **Docker** *(recommended)* — or Python 3.10+ with `cryptography` and `gpg`
+To verify that the cracker works end-to-end **without waiting hours**, create a
+GPG file encrypted with a known 2-character password (`ab`) and let the cracker
+find it in under a second:
+
+```bash
+# 1. Build the image (if not already done)
+docker build -t gpg-cracker .
+
+# 2. Create a test file with known password "ab" and crack it immediately
+docker run --rm --entrypoint bash gpg-cracker -c "
+  echo 'Hello, this is a test message!' \
+    | gpg --batch --yes --symmetric \
+          --cipher-algo AES256 --s2k-mode 3 --s2k-digest-algo SHA512 \
+          --passphrase 'ab' --output /app/test.gpg && \
+  python3 cracker.py --file /app/test.gpg --max-len 2 --prefix-len 1 --workers 4
+"
+```
+
+Expected output (completes in < 1 second):
 
 ```
-pip install cryptography
+============================================================
+  GPG Brute-Force Cracker
+============================================================
+  File        : /app/test.gpg
+  Mode        : in-memory quick-check
+  Max length  : 2
+  Prefix len  : 1  (26 tasks)
+  Workers     : 4
+  Search space: 702 passwords
+  Cipher      : AES-256
+  S2K hash    : SHA512
+  S2K count   : 65,011,712
+============================================================
+
+[+] KEY FOUND (CONFIRMED): 'ab'
+[*] Time elapsed: 0.43 s
 ```
+
+This confirms:
+- GPG packet parsing works correctly
+- S2K key derivation matches GPG's own implementation
+- OpenPGP CFB quick-check correctly identifies the right key
+- Full `gpg --decrypt` confirmation passes
 
 ---
 
-## Run with Docker (recommended)
+## Run with Docker
 
 ```bash
 # 1. Build the image
 docker build -t gpg-cracker .
 
-# 2. Run (tries passwords up to 6 characters)
+# 2. Run with default settings (max-len 6, all CPU cores)
 docker run --rm gpg-cracker
 
-# 3. Custom options
+# 3. Custom options (e.g. max-len 4, 8 workers)
 docker run --rm gpg-cracker --max-len 4 --workers 8
+
+# 4. Resource-limited run (recommended for reproducible benchmarking)
+#    Mirrors the isolated environment used for the experiments above.
+docker run --rm --cpus 2 --memory 512m gpg-cracker --max-len 4 --workers 2
 ```
 
-### Use John the Ripper (faster, C-based)
+### Run the benchmark
 
 ```bash
-# Extract GPG hash for john
+docker run --rm --cpus 1 --memory 512m --entrypoint bash gpg-cracker \
+  -c "python3 benchmark.py"
+```
+
+### Use John the Ripper (C-speed alternative)
+
+```bash
 docker run --rm --entrypoint bash gpg-cracker -c \
   "gpg2john archive.gpg > /tmp/hash.txt && \
    john --format=gpg --incremental=lower /tmp/hash.txt"
@@ -132,7 +217,7 @@ usage: cracker.py [-h] [--file PATH] [--max-len N] [--prefix-len N]
 .
 ├── archive.gpg    ← encrypted file (provided)
 ├── cracker.py     ← main program (in-memory, multiprocessing)
-├── benchmark.py   ← technology comparison experiment
+├── benchmark.py   ← technology & generation-strategy experiments
 ├── Dockerfile     ← container (Python + cryptography + john)
 └── README.md      ← this file
 ```
@@ -156,8 +241,8 @@ usage: cracker.py [-h] [--file PATH] [--max-len N] [--prefix-len N]
   S2K count   : 65,011,712
 ============================================================
 
-[+] KEY FOUND (CONFIRMED): 'secret'
-[*] Time elapsed: 42.17 s
+[+] KEY FOUND (CONFIRMED): '<passphrase>'
+[*] Time elapsed: ...
 ```
 
 Exit codes: `0` = key found, `1` = not found / interrupted.

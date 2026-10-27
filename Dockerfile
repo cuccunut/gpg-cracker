@@ -24,8 +24,9 @@ RUN apt-get update && \
 WORKDIR /app
 
 # ── Copy source + encrypted archive ──────────────────────────────────────────
-COPY cracker.py   ./cracker.py
-COPY archive.gpg  ./archive.gpg
+COPY cracker.py    ./cracker.py
+COPY benchmark.py  ./benchmark.py
+COPY archive.gpg   ./archive.gpg
 
 # ── Default command: Python in-memory cracker ─────────────────────────────────
 #   Override at runtime, e.g.:
